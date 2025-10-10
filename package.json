@@ -10,8 +10,10 @@
   },
   "dependencies": {
     "@decartai/sdk": "latest",
+    "@radix-ui/react-slot": "^1.2.3",
     "@react-three/drei": "latest",
     "@react-three/fiber": "latest",
+    "@tailwindcss/postcss": "^4.1.14",
     "@vercel/analytics": "^1.4.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

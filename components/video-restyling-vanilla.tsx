@@ -1,10 +1,9 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
-import { createDecartClient, models } from "@decartai/sdk"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Loader2, Play, Square, Sparkles } from "lucide-react"
+import { Loader2, Play, Square, Sparkles, Maximize2, Minimize2 } from "lucide-react"
 
 interface VideoRestylingProps {
   apiKey: string
@@ -18,15 +17,17 @@ export function VideoRestyling({ apiKey, canvasElement, prompt, onPromptChange }
   const [isConnecting, setIsConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [connectionState, setConnectionState] = useState<string>("disconnected")
+  const [isFullscreen, setIsFullscreen] = useState(false)
 
   const videoOutputRef = useRef<HTMLVideoElement>(null)
-  const realtimeClientRef = useRef<any>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const isManualDisconnectRef = useRef(false)
 
   const startRestyling = async () => {
-    console.log("[v0] Starting restyling process...")
+    console.log("[v0] Starting vanilla WebRTC restyling process...")
     console.log("[v0] API Key present:", !!apiKey)
     console.log("[v0] Canvas element present:", !!canvasElement)
     console.log("[v0] Video element present:", !!videoOutputRef.current)
@@ -80,14 +81,6 @@ export function VideoRestyling({ apiKey, canvasElement, prompt, onPromptChange }
       const settings = videoTrack.getSettings()
       console.log("[v0] Video track settings:", settings.width, "x", settings.height, "@", settings.frameRate, "fps")
 
-      // Monitor track health
-      videoTrack.addEventListener("ended", () => {
-        console.error("[v0] Video track ended unexpectedly!")
-      })
-      videoTrack.addEventListener("mute", () => {
-        console.warn("[v0] Video track muted")
-      })
-
       if (settings.width !== 1280 || settings.height !== 704) {
         throw new Error(
           `Stream resolution mismatch: ${settings.width}x${settings.height}. Expected 1280x704 for API compatibility.`,
@@ -99,149 +92,173 @@ export function VideoRestyling({ apiKey, canvasElement, prompt, onPromptChange }
 
       streamRef.current = stream
 
-      console.log("[v0] Creating Decart client...")
-      const client = createDecartClient({
-        apiKey: apiKey,
-      })
+      // Create WebSocket connection
+      const wsUrl = `wss://api3.decart.ai/v1/stream?api_key=${encodeURIComponent(apiKey)}&model=mirage`
+      console.log("[v0] Connecting to WebSocket...")
+      const ws = new WebSocket(wsUrl)
+      wsRef.current = ws
 
-      const model = models.realtime("mirage")
-      console.log("[v0] Using model:", model.name, "- Expected:", model.width, "x", model.height, "@", model.fps, "fps")
+      ws.onopen = () => {
+        console.log("[v0] WebSocket connected")
+        setConnectionState("connecting")
+      }
 
-      console.log("[v0] Connecting to realtime API...")
-      const realtimeClient = await client.realtime.connect(stream, {
-        model,
-        customizeOffer: async (offer, peerConnection) => {
-          console.log("[v0] customizeOffer called")
-          console.log("[v0] Peer connection type:", typeof peerConnection)
-          console.log("[v0] Peer connection methods:", peerConnection ? Object.getOwnPropertyNames(Object.getPrototypeOf(peerConnection)) : "null")
+      ws.onerror = (event) => {
+        console.error("[v0] WebSocket error:", event)
+        setError("WebSocket connection failed")
+        setIsConnecting(false)
+        setIsConnected(false)
+      }
 
-          // Log the original offer
-          console.log("[v0] Original offer SDP:", offer.sdp?.substring(0, 200))
-
-          // Try multiple approaches to configure TURN servers
-
-          // Approach 1: Try setConfiguration if available
-          if (peerConnection && typeof peerConnection.setConfiguration === "function") {
-            try {
-              const config = {
-                iceServers: [
-                  { urls: "stun:stun.l.google.com:19302" },
-                  { urls: "stun:stun1.l.google.com:19302" },
-                  {
-                    urls: "turn:openrelay.metered.ca:80",
-                    username: "openrelayproject",
-                    credential: "openrelayproject",
-                  },
-                  {
-                    urls: "turn:openrelay.metered.ca:443",
-                    username: "openrelayproject",
-                    credential: "openrelayproject",
-                  },
-                  {
-                    urls: "turn:openrelay.metered.ca:443?transport=tcp",
-                    username: "openrelayproject",
-                    credential: "openrelayproject",
-                  },
-                ],
-                iceTransportPolicy: "all" as RTCIceTransportPolicy,
-              }
-              peerConnection.setConfiguration(config)
-              console.log("[v0] ✓ Applied TURN server configuration via setConfiguration")
-            } catch (err) {
-              console.error("[v0] ✗ setConfiguration failed:", err)
-            }
-          } else {
-            console.log("[v0] ✗ setConfiguration not available")
-          }
-
-          // Approach 2: Monitor ICE connection state
-          if (peerConnection) {
-            peerConnection.addEventListener("iceconnectionstatechange", () => {
-              console.log("[v0] ICE connection state:", peerConnection.iceConnectionState)
-            })
-            peerConnection.addEventListener("icegatheringstatechange", () => {
-              console.log("[v0] ICE gathering state:", peerConnection.iceGatheringState)
-            })
-            peerConnection.addEventListener("connectionstatechange", () => {
-              console.log("[v0] Connection state:", peerConnection.connectionState)
-            })
-          }
-
-          return offer
-        },
-        onRemoteStream: (transformedStream) => {
-          console.log("[v0] Received transformed stream with", transformedStream.getVideoTracks().length, "tracks")
-          const transformedTrack = transformedStream.getVideoTracks()[0]
-          if (transformedTrack) {
-            console.log("[v0] Transformed track state:", transformedTrack.readyState)
-            const transformedSettings = transformedTrack.getSettings()
-            console.log(
-              "[v0] Transformed track settings:",
-              transformedSettings.width,
-              "x",
-              transformedSettings.height,
-              "@",
-              transformedSettings.frameRate,
-              "fps",
-            )
-
-            if (transformedSettings.width === 0 || transformedSettings.height === 0) {
-              console.log("[v0] Note: Transformed stream dimensions are 0x0 initially, waiting for metadata to load...")
-            }
-          }
-
-          if (videoOutputRef.current) {
-            videoOutputRef.current.srcObject = transformedStream
-            console.log("[v0] Set transformed stream to video element")
-
-            videoOutputRef.current
-              .play()
-              .then(() => {
-                console.log("[v0] Video playback started successfully")
-              })
-              .catch((err) => {
-                console.error("[v0] Video playback failed:", err)
-                setError("Video playback failed: " + err.message)
-              })
-          } else {
-            console.error("[v0] Video output ref is null!")
-          }
-        },
-      })
-
-      console.log("[v0] Realtime client connected")
-      realtimeClientRef.current = realtimeClient
-
-      console.log("[v0] Setting initial prompt:", prompt)
-      realtimeClient.setPrompt(prompt)
-
-      realtimeClient.on("connectionChange", (state: string) => {
-        console.log("[v0] Connection state changed:", state)
-        setConnectionState(state)
-        setIsConnected(state === "connected")
-
-        if (state === "disconnected" && !isManualDisconnectRef.current) {
-          console.log("[v0] Unexpected disconnect detected, attempting reconnect in 3s...")
+      ws.onclose = () => {
+        console.log("[v0] WebSocket closed")
+        if (!isManualDisconnectRef.current) {
+          console.log("[v0] Unexpected WebSocket close, attempting reconnect in 3s...")
+          setConnectionState("disconnected")
+          setIsConnected(false)
           setError("Connection lost, reconnecting...")
           reconnectTimeoutRef.current = setTimeout(() => {
             console.log("[v0] Attempting automatic reconnection...")
             startRestyling()
           }, 3000)
-        } else if (state === "disconnected") {
-          setIsConnecting(false)
+        } else {
+          setConnectionState("disconnected")
+          setIsConnected(false)
         }
+      }
+
+      ws.onmessage = async (event) => {
+        const message = JSON.parse(event.data)
+        console.log("[v0] WebSocket message type:", message.type)
+
+        if (message.type === "answer" && peerConnectionRef.current) {
+          console.log("[v0] Received SDP answer from server")
+          await peerConnectionRef.current.setRemoteDescription({
+            type: "answer",
+            sdp: message.sdp,
+          })
+          console.log("[v0] Remote description set")
+          setIsConnected(true)
+          setIsConnecting(false)
+          setConnectionState("connected")
+        }
+      }
+
+      // Wait for WebSocket to be ready
+      await new Promise<void>((resolve, reject) => {
+        const checkInterval = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            clearInterval(checkInterval)
+            resolve()
+          } else if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+            clearInterval(checkInterval)
+            reject(new Error("WebSocket failed to connect"))
+          }
+        }, 100)
       })
 
-      realtimeClient.on("error", (error: any) => {
-        console.error("[v0] SDK error:", error)
-        setError(error.message || "An error occurred")
-        setIsConnecting(false)
-        setIsConnected(false)
+      // Create peer connection with multiple reliable ICE servers
+      console.log("[v0] Creating RTCPeerConnection with ICE servers...")
+      const peerConnection = new RTCPeerConnection({
+        iceServers: [
+          // Google STUN servers
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun1.l.google.com:19302" },
+          // Twilio STUN
+          { urls: "stun:global.stun.twilio.com:3478" },
+          // Free TURN servers with better reliability
+          {
+            urls: [
+              "turn:numb.viagenie.ca",
+              "turns:numb.viagenie.ca"
+            ],
+            username: "webrtc@live.com",
+            credential: "muazkh",
+          },
+          {
+            urls: [
+              "turn:turn.anyfirewall.com:443?transport=tcp",
+            ],
+            username: "webrtc",
+            credential: "webrtc",
+          },
+        ],
+        iceTransportPolicy: "all",
+        iceCandidatePoolSize: 10,
+      })
+      peerConnectionRef.current = peerConnection
+
+      console.log("[v0] ICE servers configured with STUN + TURN (multiple providers)")
+
+      // Send ICE candidates to server
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate && ws.readyState === WebSocket.OPEN) {
+          console.log("[v0] Sending ICE candidate to server, type:", event.candidate.type)
+          ws.send(
+            JSON.stringify({
+              type: "ice-candidate",
+              candidate: event.candidate,
+            }),
+          )
+        }
+      }
+
+      // Monitor connection states
+      peerConnection.oniceconnectionstatechange = () => {
+        console.log("[v0] ICE connection state:", peerConnection.iceConnectionState)
+        if (peerConnection.iceConnectionState === "failed") {
+          console.error("[v0] ICE connection failed!")
+          setError("ICE connection failed - network connectivity issue")
+        }
+      }
+
+      peerConnection.onicegatheringstatechange = () => {
+        console.log("[v0] ICE gathering state:", peerConnection.iceGatheringState)
+      }
+
+      peerConnection.onconnectionstatechange = () => {
+        console.log("[v0] Peer connection state:", peerConnection.connectionState)
+      }
+
+      // Receive transformed video stream
+      peerConnection.ontrack = (event) => {
+        console.log("[v0] Received remote track, streams:", event.streams.length)
+        if (videoOutputRef.current && event.streams[0]) {
+          videoOutputRef.current.srcObject = event.streams[0]
+          console.log("[v0] Set transformed stream to video element")
+        }
+      }
+
+      // Add local stream tracks to peer connection
+      console.log("[v0] Adding local stream tracks to peer connection...")
+      stream.getTracks().forEach((track) => {
+        peerConnection.addTrack(track, stream)
+        console.log("[v0] Added track:", track.kind, track.id)
       })
 
-      setIsConnecting(false)
-      setIsConnected(true)
-      console.log("[v0] Restyling started successfully")
+      // Create and send offer
+      console.log("[v0] Creating WebRTC offer...")
+      const offer = await peerConnection.createOffer()
+      await peerConnection.setLocalDescription(offer)
+      console.log("[v0] Local description set, sending offer to server...")
+
+      ws.send(
+        JSON.stringify({
+          type: "offer",
+          sdp: offer.sdp,
+        }),
+      )
+
+      // Send initial prompt
+      console.log("[v0] Sending initial prompt:", prompt)
+      ws.send(
+        JSON.stringify({
+          type: "prompt",
+          prompt: prompt,
+        }),
+      )
+
+      console.log("[v0] Vanilla WebRTC setup complete")
     } catch (err: any) {
       console.error("[v0] Failed to start restyling:", err)
       console.error("[v0] Error details:", err.message, err.stack)
@@ -260,9 +277,13 @@ export function VideoRestyling({ apiKey, canvasElement, prompt, onPromptChange }
       reconnectTimeoutRef.current = null
     }
 
-    if (realtimeClientRef.current) {
-      realtimeClientRef.current.disconnect()
-      realtimeClientRef.current = null
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close()
+      peerConnectionRef.current = null
+    }
+    if (wsRef.current) {
+      wsRef.current.close()
+      wsRef.current = null
     }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop())
@@ -279,8 +300,13 @@ export function VideoRestyling({ apiKey, canvasElement, prompt, onPromptChange }
 
   const updatePrompt = () => {
     console.log("[v0] Updating prompt to:", prompt)
-    if (realtimeClientRef.current && isConnected) {
-      realtimeClientRef.current.setPrompt(prompt)
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && isConnected) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: "prompt",
+          prompt: prompt,
+        }),
+      )
       console.log("[v0] Prompt updated successfully")
     } else {
       console.log("[v0] Cannot update prompt - not connected")
@@ -299,18 +325,23 @@ export function VideoRestyling({ apiKey, canvasElement, prompt, onPromptChange }
 
   return (
     <>
+      {/* Video Container - Fullscreen or Overlay */}
       <div
-        className={`absolute top-20 right-4 z-20 w-96 rounded-lg overflow-hidden shadow-2xl border-2 border-white/20 transition-opacity duration-300 ${
+        className={`absolute transition-all duration-300 ${
+          isFullscreen
+            ? "inset-0 z-10" // Fullscreen - covers entire viewport, below controls
+            : "top-20 right-4 z-20 w-96 rounded-lg shadow-2xl border-2 border-white/20" // Overlay - top right corner
+        } ${
           isConnected ? "opacity-100" : "opacity-0 pointer-events-none"
-        }`}
+        } overflow-hidden bg-black`}
       >
-        <div className="relative aspect-video bg-black">
+        <div className={`relative ${isFullscreen ? "w-full h-full" : "aspect-video"}`}>
           <video
             ref={videoOutputRef}
             autoPlay
             playsInline
             muted
-            className="w-full h-full object-contain"
+            className="w-full h-full object-cover"
             onLoadedMetadata={() => {
               console.log("[v0] Video metadata loaded")
               if (videoOutputRef.current) {
@@ -327,19 +358,32 @@ export function VideoRestyling({ apiKey, canvasElement, prompt, onPromptChange }
           />
           {isConnected && (
             <>
-              <div className="absolute top-2 right-2 px-2 py-1 bg-green-500 text-white text-xs font-semibold rounded flex items-center gap-1">
+              {/* Live indicator */}
+              <div className={`absolute ${isFullscreen ? "top-24 left-4" : "top-2 right-2"} px-2 py-1 bg-green-500 text-white text-xs font-semibold rounded flex items-center gap-1`}>
                 <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
                 LIVE
               </div>
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2">
-                <p className="text-white text-xs font-medium truncate">{prompt}</p>
-              </div>
+              {/* Toggle fullscreen button */}
+              <button
+                onClick={() => setIsFullscreen(!isFullscreen)}
+                className={`absolute ${isFullscreen ? "top-24 right-4" : "top-2 left-2"} p-2 bg-black/50 hover:bg-black/70 text-white rounded transition-colors`}
+                title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+              >
+                {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+              </button>
+              {/* Prompt display - only show in non-fullscreen */}
+              {!isFullscreen && (
+                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2">
+                  <p className="text-white text-xs font-medium truncate">{prompt}</p>
+                </div>
+              )}
             </>
           )}
         </div>
       </div>
 
-      <div className="absolute bottom-0 left-0 right-0 z-20 p-4 bg-gradient-to-t from-black/70 to-transparent pointer-events-none">
+      {/* Controls - always on top */}
+      <div className="absolute bottom-0 left-0 right-0 z-30 p-4 bg-gradient-to-t from-black/70 to-transparent pointer-events-none">
         <div className="max-w-7xl mx-auto pointer-events-auto">
           <div className="bg-white/10 backdrop-blur-lg rounded-lg p-4 border border-white/20">
             <div className="space-y-3">
@@ -411,7 +455,9 @@ export function VideoRestyling({ apiKey, canvasElement, prompt, onPromptChange }
                 {error && <span className="text-red-400 text-xs">{error}</span>}
               </div>
 
-              <div className="text-white/60 text-xs text-center">Use WASD or Arrow Keys to fly the plane</div>
+              <div className="text-white/60 text-xs text-center">
+                W/S: Throttle | A/D: Roll (Bank) | ↑/↓: Pitch (Nose)
+              </div>
             </div>
           </div>
         </div>

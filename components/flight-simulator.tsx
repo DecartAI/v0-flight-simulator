@@ -6,41 +6,17 @@ import { Sky, Cloud } from "@react-three/drei"
 import { Input } from "@/components/ui/input"
 import { PlaneIcon } from "lucide-react"
 import { Plane } from "@/components/plane"
-import { VideoRestyling } from "@/components/video-restyling"
+import { VideoRestyling } from "@/components/video-restyling-vanilla"
 import { Terrain } from "@/components/terrain"
 import { Vector3 } from "three"
 
 function RenderController() {
-  const { gl, scene, camera, invalidate } = useThree()
-  const lastRenderTime = useRef(0)
-  const targetFPS = 25
-  const frameInterval = 1000 / targetFPS // 40ms per frame
-  const animationFrameRef = useRef<number>()
-
   useEffect(() => {
-    console.log("[v0] Starting 25 FPS render loop")
-
-    const render = (timestamp: number) => {
-      const elapsed = timestamp - lastRenderTime.current
-
-      if (elapsed >= frameInterval) {
-        // Render the scene at exactly 25 FPS
-        lastRenderTime.current = timestamp - (elapsed % frameInterval)
-        invalidate() // Trigger a render
-      }
-
-      animationFrameRef.current = requestAnimationFrame(render)
-    }
-
-    animationFrameRef.current = requestAnimationFrame(render)
-
+    console.log("[v0] Canvas running in continuous mode at 25 FPS")
     return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current)
-      }
-      console.log("[v0] Stopped 25 FPS render loop")
+      console.log("[v0] Stopped render loop")
     }
-  }, [invalidate, frameInterval])
+  }, [])
 
   return null
 }
@@ -53,7 +29,7 @@ export function FlightSimulator() {
 
   return (
     <div className="relative w-full h-screen">
-      <div className="absolute top-0 left-0 right-0 z-20 p-4 bg-gradient-to-b from-black/70 to-transparent pointer-events-none">
+      <div className="absolute top-0 left-0 right-0 z-30 p-4 bg-gradient-to-b from-black/70 to-transparent pointer-events-none">
         <div className="flex items-center justify-between max-w-7xl mx-auto pointer-events-auto">
           <div className="flex items-center gap-3 text-white">
             <PlaneIcon className="w-6 h-6" />
@@ -74,13 +50,13 @@ export function FlightSimulator() {
       <div className="absolute inset-0">
         <Canvas
           camera={{ position: [0, 2, 8], fov: 75 }}
-          frameloop="demand"
+          frameloop="always"
           gl={{
             preserveDrawingBuffer: true,
           }}
           dpr={1}
           style={{ width: "100%", height: "100%" }}
-          onCreated={({ gl, size }) => {
+          onCreated={({ gl, size, clock }) => {
             gl.setSize(1280, 704, false)
             console.log("[v0] Canvas set to required resolution: 1280x704")
             setCanvasElement(gl.domElement)
