@@ -3,21 +3,30 @@
 import { useRef, useEffect, useState } from "react"
 import { useFrame, useThree } from "@react-three/fiber"
 import type { Mesh, Group } from "three"
-import { Vector3, Euler } from "three"
+import { Vector3, Euler, Quaternion } from "three"
 
 interface PlaneProps {
   onPositionChange?: (position: Vector3) => void
+  onStatusChange?: (speed: number, mouseControls: boolean) => void
 }
 
-export function Plane({ onPositionChange }: PlaneProps) {
+// Plane component
+export function Plane({ onPositionChange, onStatusChange }: PlaneProps) {
   const groupRef = useRef<Group>(null)
   const planeRef = useRef<Mesh>(null)
   const propellerRef = useRef<Group>(null)
   const { camera } = useThree()
 
-  // Physics state
-  const velocity = useRef(new Vector3(0, 0, -15)) // Initial forward velocity
-  const throttle = useRef(15) // Current speed/throttle
+  // Arcade physics state
+  const speed = useRef(20) // Current speed
+  const targetSpeed = useRef(20) // Target speed for smooth acceleration
+  const turnSpeed = useRef(0) // Current turn rate
+  const pitchSpeed = useRef(0) // Current pitch rate
+  const visualRoll = useRef(0) // Visual banking for turns
+
+  // Smooth camera following
+  const cameraPositionTarget = useRef(new Vector3())
+  const cameraLookAtTarget = useRef(new Vector3())
 
   const [keys, setKeys] = useState({
     a: false,
@@ -26,178 +35,293 @@ export function Plane({ onPositionChange }: PlaneProps) {
     s: false,
     arrowUp: false,
     arrowDown: false,
+    arrowLeft: false,
+    arrowRight: false,
+    space: false,
+    shift: false,
   })
 
+  // Mouse controls state
+  const [mouseControls, setMouseControls] = useState(false)
+  const mousePosition = useRef({ x: 0, y: 0 })
+
+  // Notify status changes
   useEffect(() => {
+    if (onStatusChange) {
+      onStatusChange(speed.current, mouseControls)
+    }
+  }, [mouseControls, onStatusChange])
+
+  useEffect(() => {
+    // Key mapping for cleaner keyboard handling
+    const keyMap: Record<string, keyof typeof keys> = {
+      'a': 'a',
+      'd': 'd',
+      'w': 'w',
+      's': 's',
+      'arrowup': 'arrowUp',
+      'arrowdown': 'arrowDown',
+      'arrowleft': 'arrowLeft',
+      'arrowright': 'arrowRight',
+      ' ': 'space',
+      'shift': 'shift'
+    }
+
     const handleKeyDown = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase()
-      if (key === "a") setKeys((prev) => ({ ...prev, a: true }))
-      if (key === "d") setKeys((prev) => ({ ...prev, d: true }))
-      if (key === "w") setKeys((prev) => ({ ...prev, w: true }))
-      if (key === "s") setKeys((prev) => ({ ...prev, s: true }))
-      if (key === "arrowup") setKeys((prev) => ({ ...prev, arrowUp: true }))
-      if (key === "arrowdown") setKeys((prev) => ({ ...prev, arrowDown: true }))
+      const mappedKey = keyMap[key]
+      if (mappedKey) {
+        setKeys((prev) => ({ ...prev, [mappedKey]: true }))
+      }
     }
 
     const handleKeyUp = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase()
-      if (key === "a") setKeys((prev) => ({ ...prev, a: false }))
-      if (key === "d") setKeys((prev) => ({ ...prev, d: false }))
-      if (key === "w") setKeys((prev) => ({ ...prev, w: false }))
-      if (key === "s") setKeys((prev) => ({ ...prev, s: false }))
-      if (key === "arrowup") setKeys((prev) => ({ ...prev, arrowUp: false }))
-      if (key === "arrowdown") setKeys((prev) => ({ ...prev, arrowDown: false }))
+      const mappedKey = keyMap[key]
+      if (mappedKey) {
+        setKeys((prev) => ({ ...prev, [mappedKey]: false }))
+      }
+    }
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!mouseControls) return
+      // Normalize mouse position to -1 to 1
+      mousePosition.current.x = (e.clientX / window.innerWidth) * 2 - 1
+      mousePosition.current.y = -(e.clientY / window.innerHeight) * 2 + 1
+    }
+
+    const handleMouseDown = (e: MouseEvent) => {
+      if (e.button === 2) { // Right click to toggle mouse controls
+        setMouseControls((prev) => !prev)
+        e.preventDefault()
+      }
+    }
+
+    const handleContextMenu = (e: Event) => {
+      e.preventDefault() // Prevent context menu on right click
     }
 
     window.addEventListener("keydown", handleKeyDown)
     window.addEventListener("keyup", handleKeyUp)
+    window.addEventListener("mousemove", handleMouseMove)
+    window.addEventListener("mousedown", handleMouseDown)
+    window.addEventListener("contextmenu", handleContextMenu)
 
     return () => {
       window.removeEventListener("keydown", handleKeyDown)
       window.removeEventListener("keyup", handleKeyUp)
+      window.removeEventListener("mousemove", handleMouseMove)
+      window.removeEventListener("mousedown", handleMouseDown)
+      window.removeEventListener("contextmenu", handleContextMenu)
     }
-  }, [])
+  }, [mouseControls])
 
   useFrame((state, delta) => {
     if (!groupRef.current) return
 
     const plane = groupRef.current
 
-    // === CONTROLS ===
+    // === ARCADE CONTROLS ===
 
-    // Throttle control (W/S) - Speed up/slow down
-    const throttleSpeed = 20
-    const minThrottle = 10
-    const maxThrottle = 30
+    // Speed Control - More responsive with boost and brake
+    const normalSpeed = 20
+    const boostSpeed = 35
+    const brakeSpeed = 10
 
-    if (keys.w) {
-      throttle.current = Math.min(throttle.current + throttleSpeed * delta, maxThrottle)
-    }
-    if (keys.s) {
-      throttle.current = Math.max(throttle.current - throttleSpeed * delta, minThrottle)
-    }
-
-    // Roll control (A/D) - Bank left/right
-    const rollSpeed = 3.5
-    const maxRoll = Math.PI / 2.5 // 72 degrees max bank
-
-    if (keys.a) {
-      plane.rotation.z = Math.min(plane.rotation.z + rollSpeed * delta, maxRoll)
-    } else if (keys.d) {
-      plane.rotation.z = Math.max(plane.rotation.z - rollSpeed * delta, -maxRoll)
+    if (keys.space) {
+      // Boost!
+      targetSpeed.current = boostSpeed
+    } else if (keys.shift) {
+      // Brake!
+      targetSpeed.current = brakeSpeed
+    } else if (keys.w) {
+      // Speed up
+      targetSpeed.current = Math.min(targetSpeed.current + 15 * delta, 30)
+    } else if (keys.s) {
+      // Slow down
+      targetSpeed.current = Math.max(targetSpeed.current - 15 * delta, 12)
     } else {
-      // Return to level flight - smoother
-      plane.rotation.z *= 0.92
+      // Return to normal speed
+      targetSpeed.current = normalSpeed
     }
 
-    // Pitch control (Arrow Up/Down) - Nose up/down
-    const pitchSpeed = 2.2
-    const maxPitch = Math.PI / 3 // 60 degrees max pitch
+    // Smooth speed transitions
+    speed.current += (targetSpeed.current - speed.current) * 5 * delta
+
+    // Turning Control - Direct and responsive
+    let targetTurnSpeed = 0
+
+    // Keyboard turning
+    if (keys.a || keys.arrowLeft) {
+      targetTurnSpeed = 2.5 // Turn left
+    } else if (keys.d || keys.arrowRight) {
+      targetTurnSpeed = -2.5 // Turn right
+    }
+
+    // Mouse turning (if enabled)
+    if (mouseControls) {
+      targetTurnSpeed = -mousePosition.current.x * 3
+    }
+
+    // Smooth turning
+    turnSpeed.current += (targetTurnSpeed - turnSpeed.current) * 8 * delta
+    plane.rotation.y += turnSpeed.current * delta
+
+    // Visual banking when turning (makes it look cooler)
+    const targetRoll = -turnSpeed.current * 0.3 // Bank into turns
+    visualRoll.current += (targetRoll - visualRoll.current) * 5 * delta
+    plane.rotation.z = visualRoll.current
+
+    // Pitch Control - More responsive for altitude changes
+    let targetPitchSpeed = 0
 
     if (keys.arrowUp) {
-      plane.rotation.x = Math.min(plane.rotation.x + pitchSpeed * delta, maxPitch)
+      targetPitchSpeed = 2.2 // Pitch up - increased from 1.5
     } else if (keys.arrowDown) {
-      plane.rotation.x = Math.max(plane.rotation.x - pitchSpeed * delta, -maxPitch)
-    } else {
-      // Gradually return to neutral pitch - smoother
-      plane.rotation.x *= 0.96
+      targetPitchSpeed = -2.2 // Pitch down - increased from 1.5
     }
 
-    // === PHYSICS ===
+    // Mouse pitch (if enabled)
+    if (mouseControls) {
+      targetPitchSpeed = mousePosition.current.y * 3 // Increased from 2
+    }
 
-    // Gravity (glider feel)
-    const gravity = -4
-    velocity.current.y += gravity * delta
+    // Smooth pitching - faster response
+    pitchSpeed.current += (targetPitchSpeed - pitchSpeed.current) * 8 * delta
 
-    // Lift (based on speed and pitch angle) - gliding mechanics
-    const baseLift = (throttle.current / 20) * 2.5 // More speed = more lift (reduced)
-    // Pitch affects lift: nose up = more lift, nose down = less/negative lift
-    const pitchFactor = plane.rotation.x * 4 // Positive rotation.x (nose up) = positive lift
-    const liftForce = baseLift + pitchFactor
-    velocity.current.y += liftForce * delta
+    // Limit pitch to prevent flipping
+    const maxPitch = Math.PI / 2.5 // Allow steeper pitch angles
+    plane.rotation.x = Math.max(-maxPitch, Math.min(maxPitch, plane.rotation.x + pitchSpeed.current * delta))
 
-    // Forward thrust (in the direction the plane is pointing)
+    // Gentler auto-level when not actively pitching
+    if (!keys.arrowUp && !keys.arrowDown && !mouseControls) {
+      plane.rotation.x *= 0.98 // Slower return to level
+    }
+
+    // === SIMPLIFIED PHYSICS ===
+
+    // Calculate forward direction
     const forward = new Vector3(0, 0, -1)
-    forward.applyEuler(new Euler(plane.rotation.x, plane.rotation.y, 0, 'XYZ'))
-    forward.multiplyScalar(throttle.current)
+    forward.applyQuaternion(plane.quaternion)
 
-    // Apply forward velocity
-    velocity.current.x = forward.x
-    velocity.current.z = forward.z
+    // Apply movement with some vertical influence from pitch
+    const movement = forward.multiplyScalar(speed.current * delta)
 
-    // Banking creates turning (roll affects yaw) - more responsive
-    const turnRate = -plane.rotation.z * 1.2 // More bank = sharper turn
-    plane.rotation.y += turnRate * delta
+    // Much stronger vertical influence from pitch for responsive altitude control
+    const verticalInfluence = plane.rotation.x * speed.current * 2.5 // Increased from 0.8
+    movement.y += verticalInfluence * delta
 
-    // Drag/air resistance (reduced for smoother movement)
-    velocity.current.multiplyScalar(0.995)
+    // Very gentle gravity for arcade feel
+    movement.y -= 0.5 * delta // Reduced from 2
 
-    // Apply velocity to position
-    plane.position.add(velocity.current.clone().multiplyScalar(delta))
-
-    // Ground collision (gentle bounce)
-    if (plane.position.y < 1) {
-      plane.position.y = 1
-      velocity.current.y = Math.max(0.5, velocity.current.y) // Gentle bounce
+    // Only apply gentle altitude assistance at very low altitude
+    if (plane.position.y < 3 && !keys.arrowDown && plane.rotation.x >= 0) {
+      // Only help maintain altitude if not diving and very close to ground
+      movement.y += (3 - plane.position.y) * 0.2 * delta
     }
 
-    // === CAMERA ===
-    const cameraOffset = new Vector3(0, 4, 12)
+    // Apply movement
+    plane.position.add(movement)
+
+    // Ground collision - bounce up
+    if (plane.position.y < 1.5) {
+      plane.position.y = 1.5
+      // Auto pull-up near ground
+      if (plane.rotation.x < 0) {
+        plane.rotation.x *= 0.8
+      }
+    }
+
+    // Ceiling limit (for fun)
+    if (plane.position.y > 200) {
+      plane.position.y = 200
+    }
+
+    // === ENHANCED CAMERA ===
+
+    // Dynamic camera distance based on speed
+    const cameraDistance = 12 + (speed.current - 20) * 0.3
+    const cameraHeight = 4 + Math.abs(plane.rotation.x) * 2
+
+    // Calculate target camera position
+    const cameraOffset = new Vector3(0, cameraHeight, cameraDistance)
     cameraOffset.applyQuaternion(plane.quaternion)
-    camera.position.copy(plane.position).add(cameraOffset)
+    cameraPositionTarget.current.copy(plane.position).add(cameraOffset)
 
-    const lookAtOffset = new Vector3(0, 0, -10)
+    // Smooth camera movement
+    camera.position.lerp(cameraPositionTarget.current, 5 * delta)
+
+    // Look ahead of the plane
+    const lookAheadDistance = 15 + speed.current * 0.5
+    const lookAtOffset = new Vector3(0, 0, -lookAheadDistance)
     lookAtOffset.applyQuaternion(plane.quaternion)
-    camera.lookAt(plane.position.clone().add(lookAtOffset))
+    cameraLookAtTarget.current.copy(plane.position).add(lookAtOffset)
 
-    // Gentle bobbing motion for visual feedback
+    // Smooth camera look at
+    const currentLookAt = new Vector3()
+    camera.getWorldDirection(currentLookAt)
+    const targetDirection = cameraLookAtTarget.current.clone().sub(camera.position).normalize()
+    currentLookAt.lerp(targetDirection, 5 * delta)
+    camera.lookAt(camera.position.clone().add(currentLookAt))
+
+    // === VISUAL EFFECTS ===
+
+    // Gentle bobbing for visual interest
     if (planeRef.current) {
-      planeRef.current.position.y = Math.sin(state.clock.elapsedTime * 3) * 0.08
+      planeRef.current.position.y = Math.sin(state.clock.elapsedTime * 2) * 0.05
+      // Subtle roll animation during flight
+      planeRef.current.rotation.z = Math.sin(state.clock.elapsedTime * 1.5) * 0.02
     }
 
-    // Rotate propeller based on speed
+    // Propeller speed based on throttle
     if (propellerRef.current) {
-      const propellerSpeed = (throttle.current / 10) * 50 // Scale throttle to rotation speed
-      propellerRef.current.rotation.z += propellerSpeed * delta
+      const propSpeed = (speed.current / 20) * 40
+      propellerRef.current.rotation.z += propSpeed * delta
     }
 
+    // Notify position change
     if (onPositionChange) {
       onPositionChange(plane.position.clone())
+    }
+
+    // Notify status change
+    if (onStatusChange) {
+      onStatusChange(speed.current, mouseControls)
     }
   })
 
   return (
-    <group ref={groupRef} position={[0, 0, 0]}>
+    <group ref={groupRef} position={[0, 10, 0]}>
       <group ref={planeRef} rotation={[0, Math.PI, 0]}>
         {/* Engine cowling - front of plane */}
         <mesh position={[0, 0, 1.6]} rotation={[Math.PI / 2, 0, 0]} castShadow>
           <cylinderGeometry args={[0.4, 0.35, 0.8, 16]} />
-          <meshStandardMaterial color="#2d3436" metalness={0.3} roughness={0.7} />
+        <meshStandardMaterial color="#2d3436" metalness={0.3} roughness={0.7} />
         </mesh>
 
         {/* Propeller (spinner + blades) */}
         <group ref={propellerRef} position={[0, 0, 2.1]}>
-          {/* Propeller spinner */}
-          <mesh position={[0, 0, -0.05]} rotation={[Math.PI / 2, 0, 0]} castShadow>
-            <coneGeometry args={[0.2, 0.5, 16]} />
-            <meshStandardMaterial color="#1a1a1a" metalness={0.4} roughness={0.6} />
-          </mesh>
+        {/* Propeller spinner */}
+        <mesh position={[0, 0, -0.05]} rotation={[Math.PI / 2, 0, 0]} castShadow>
+          <coneGeometry args={[0.2, 0.5, 16]} />
+          <meshStandardMaterial color="#1a1a1a" metalness={0.4} roughness={0.6} />
+        </mesh>
 
-          {/* Propeller blades */}
-          <mesh rotation={[0, 0, Math.PI / 4]} castShadow>
-            <boxGeometry args={[2.5, 0.15, 0.08]} />
-            <meshStandardMaterial color="#3d3d3d" metalness={0.2} roughness={0.8} />
-          </mesh>
-          <mesh rotation={[0, 0, -Math.PI / 4]} castShadow>
-            <boxGeometry args={[2.5, 0.15, 0.08]} />
-            <meshStandardMaterial color="#3d3d3d" metalness={0.2} roughness={0.8} />
-          </mesh>
+        {/* Propeller blades */}
+        <mesh rotation={[0, 0, Math.PI / 4]} castShadow>
+          <boxGeometry args={[2.5, 0.15, 0.08]} />
+          <meshStandardMaterial color="#3d3d3d" metalness={0.2} roughness={0.8} />
+        </mesh>
+        <mesh rotation={[0, 0, -Math.PI / 4]} castShadow>
+          <boxGeometry args={[2.5, 0.15, 0.08]} />
+          <meshStandardMaterial color="#3d3d3d" metalness={0.2} roughness={0.8} />
+        </mesh>
         </group>
 
         {/* Main Fuselage - olive drab green */}
         <mesh position={[0, 0, 0.2]} rotation={[Math.PI / 2, 0, 0]} castShadow>
           <cylinderGeometry args={[0.38, 0.32, 3, 16]} />
-          <meshStandardMaterial color="#4a5c3e" metalness={0.1} roughness={0.8} />
+        <meshStandardMaterial color="#4a5c3e" metalness={0.1} roughness={0.8} />
         </mesh>
 
         {/* Rear fuselage taper */}
@@ -210,12 +334,12 @@ export function Plane({ onPositionChange }: PlaneProps) {
         <mesh position={[0, 0.3, 0.5]} castShadow>
           <sphereGeometry args={[0.35, 16, 16, 0, Math.PI * 2, 0, Math.PI / 2]} />
           <meshStandardMaterial
-            color="#87ceeb"
-            metalness={0.3}
-            roughness={0.2}
-            transparent
-            opacity={0.5}
-          />
+              color="#87ceeb"
+              metalness={0.3}
+              roughness={0.2}
+              transparent
+              opacity={0.5}
+            />
         </mesh>
 
         {/* Cockpit frame */}
@@ -311,7 +435,34 @@ export function Plane({ onPositionChange }: PlaneProps) {
           <cylinderGeometry args={[0.08, 0.08, 0.08, 12]} />
           <meshStandardMaterial color="#1a1a1a" metalness={0.1} roughness={0.9} />
         </mesh>
+
+        {/* Boost effect indicator */}
+          {keys.space && (
+          <>
+            {/* Engine glow */}
+          <mesh position={[0.15, -0.15, 1.6]} rotation={[Math.PI / 2, 0, 0]}>
+              <cylinderGeometry args={[0.08, 0.12, 0.3, 8]} />
+            <meshStandardMaterial
+                  color="#ff6600"
+                  emissive="#ff3300"
+                  emissiveIntensity={2}
+                  transparent
+                  opacity={0.8}
+                />
+          </mesh>
+          <mesh position={[-0.15, -0.15, 1.6]} rotation={[Math.PI / 2, 0, 0]}>
+              <cylinderGeometry args={[0.08, 0.12, 0.3, 8]} />
+            <meshStandardMaterial
+                  color="#ff6600"
+                  emissive="#ff3300"
+                  emissiveIntensity={2}
+                  transparent
+                  opacity={0.8}
+                />
+          </mesh>
+          </>
+          )}
+        </group>
       </group>
-    </group>
   )
 }
