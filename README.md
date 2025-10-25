@@ -128,7 +128,7 @@ lib/
 
 ## 📄 License
 
-This project is part of the v0.app ecosystem.
+[MIT](https://github.com/DecartAI/v0-flight-simulator/blob/main/LICENSE)
 
 ## 🙏 Acknowledgments
 
