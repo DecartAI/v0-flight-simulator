@@ -37,6 +37,7 @@ export function VideoRestylingSDK({
   const [connectionState, setConnectionState] = useState<string>("disconnected");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [connectionTime, setConnectionTime] = useState<number>(0);
+  const [draftPrompt, setDraftPrompt] = useState(prompt);
 
   const videoOutputRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -375,13 +376,33 @@ export function VideoRestylingSDK({
     }
   };
 
-  // Automatically update prompt when it changes (from portals)
-  useEffect(() => {
-    if (isConnected && prompt && realtimeClientRef.current) {
-      debug.log("[v0] Prompt changed via portal, updating...");
-      updatePrompt();
+  const commitDraftPrompt = async () => {
+    debug.log("[v0] Committing draft prompt:", draftPrompt);
+    // Update the parent component's prompt state
+    onPromptChange(draftPrompt);
+    // If connected, also send to API immediately
+    if (realtimeClientRef.current && isConnected) {
+      try {
+        await realtimeClientRef.current.setPrompt(draftPrompt, { should_enrich: true });
+        debug.log("[v0] Draft prompt committed and sent to API");
+      } catch (err) {
+        debug.error("[v0] Failed to commit draft prompt:", err);
+      }
     }
-  }, [prompt, isConnected]);
+  };
+
+  // Sync draft with prompt when it changes from external sources (portals)
+  useEffect(() => {
+    // Only update draft if the prompt changed from outside (not from our input)
+    if (prompt !== draftPrompt) {
+      setDraftPrompt(prompt);
+      // If connected, also update the API with the new prompt from portal
+      if (isConnected && prompt && realtimeClientRef.current) {
+        debug.log("[v0] Prompt changed via portal, updating...");
+        updatePrompt();
+      }
+    }
+  }, [prompt]);
 
   useEffect(() => {
     return () => {
@@ -482,11 +503,11 @@ export function VideoRestylingSDK({
                 <div className="flex-1">
                   <Input
                     placeholder="Enter style prompt (e.g., 'Cyberpunk city', 'Watercolor painting')"
-                    value={prompt}
-                    onChange={(e) => onPromptChange(e.target.value)}
+                    value={draftPrompt}
+                    onChange={(e) => setDraftPrompt(e.target.value)}
                     onKeyPress={(e) => {
                       if (e.key === "Enter" && isConnected) {
-                        updatePrompt();
+                        commitDraftPrompt();
                       }
                     }}
                     className="bg-white/10 border-white/20 text-white placeholder:text-white/50"
@@ -494,7 +515,7 @@ export function VideoRestylingSDK({
                 </div>
                 {isConnected && (
                   <Button
-                    onClick={updatePrompt}
+                    onClick={commitDraftPrompt}
                     variant="secondary"
                     className="bg-white/20 hover:bg-white/30 text-white border-white/20"
                   >
