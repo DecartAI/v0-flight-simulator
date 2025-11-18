@@ -4,6 +4,13 @@ import { useState, useEffect } from "react"
 import { Canvas } from "@react-three/fiber"
 import { Sky, Cloud } from "@react-three/drei"
 import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { PlaneIcon } from "lucide-react"
 import { Plane } from "@/components/plane"
 import { VideoRestylingSDK } from "@/components/video-restyling-sdk"
@@ -27,13 +34,13 @@ const PORTALS = [
 export function FlightSimulator() {
   const [apiKey, setApiKey] = useState("")
   const [prompt, setPrompt] = useState("Cyberpunk city at night")
+  const [selectedModel, setSelectedModel] = useState("mirage")
   const [canvasElement, setCanvasElement] = useState<HTMLCanvasElement | null>(null)
   const [planePosition, setPlanePosition] = useState(new Vector3(0, 0, 0))
   const [portalMessage, setPortalMessage] = useState("")
   const [manualPromptCooldown, setManualPromptCooldown] = useState(false)
   const [planeSpeed, setPlaneSpeed] = useState(20)
   const [mouseControlsEnabled, setMouseControlsEnabled] = useState(false)
-  const [selectedModel, setSelectedModel] = useState<"mirage" | "mirage_v2">("mirage_v2")
 
   // Log canvas lifecycle
   useEffect(() => {
@@ -85,6 +92,15 @@ export function FlightSimulator() {
             >
               Get API Key Here →
             </a>
+            <Select value={selectedModel} onValueChange={setSelectedModel}>
+              <SelectTrigger className="w-40 bg-white/10 border-white/20 text-white backdrop-blur">
+                <SelectValue placeholder="Select model" />
+              </SelectTrigger>
+              <SelectContent className="bg-black/90 border-white/20 text-white">
+                <SelectItem value="mirage" className="text-white hover:bg-white/20">Mirage</SelectItem>
+                <SelectItem value="mirage_v2" className="text-white hover:bg-white/20">Mirage v2</SelectItem>
+              </SelectContent>
+            </Select>
             <div className="w-80">
               <Input
                 type="password"
@@ -179,9 +195,8 @@ export function FlightSimulator() {
         apiKey={apiKey}
         canvasElement={canvasElement}
         prompt={prompt}
+        model={selectedModel}
         onPromptChange={handleManualPromptChange}
-        selectedModel={selectedModel}
-        onModelChange={setSelectedModel}
       />
     </div>
   )

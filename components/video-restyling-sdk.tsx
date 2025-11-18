@@ -18,18 +18,16 @@ interface VideoRestylingProps {
   apiKey: string;
   canvasElement: HTMLCanvasElement | null;
   prompt: string;
+  model?: string;
   onPromptChange: (prompt: string) => void;
-  selectedModel: "mirage" | "mirage_v2";
-  onModelChange: (model: "mirage" | "mirage_v2") => void;
 }
 
 export function VideoRestylingSDK({
   apiKey,
   canvasElement,
   prompt,
+  model = "mirage",
   onPromptChange,
-  selectedModel,
-  onModelChange,
 }: VideoRestylingProps) {
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -50,10 +48,11 @@ export function VideoRestylingSDK({
   const debugIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const startRestyling = async () => {
-    debug.log(`Starting SDK-based restyling with ${selectedModel}...`);
+    debug.log(`Starting SDK-based restyling with ${model}...`);
     debug.log("API Key present:", !!apiKey);
     debug.log("Canvas element present:", !!canvasElement);
     debug.log("Video element present:", !!videoOutputRef.current);
+    debug.log("Selected model:", model);
 
     if (!validateAndSetError(apiKey, "Please enter your Decart API key", setError)) {
       return;
@@ -85,16 +84,17 @@ export function VideoRestylingSDK({
         streamRef.current.getTracks().forEach((track) => track.stop());
       }
 
-      // Get the model configuration
-      const model = models.realtime(selectedModel);
-      debug.log("[v0] Model config:", model);
+      // Get the model configuration based on selected model
+      const modelConfig = models.realtime(model);
+      debug.log("[v0] Model config:", modelConfig);
+      debug.log("[v0] Using model:", model);
 
       // Capture canvas stream
       // Note: Some browsers might not support specifying frame rate, so we'll try with and without
       debug.log(`[v0] Capturing canvas stream...`);
       let canvasStream;
       try {
-        canvasStream = canvasElement.captureStream(model.fps);
+        canvasStream = canvasElement.captureStream(modelConfig.fps);
       } catch (e) {
         debug.log("[v0] Failed to capture with FPS, trying without...");
         canvasStream = canvasElement.captureStream();
@@ -145,13 +145,13 @@ export function VideoRestylingSDK({
       debug.log("[v0] Creating Decart client...");
       clientRef.current = createDecartClient({ apiKey });
 
-      // Connect to realtime service (no initial prompt for v2 compatibility)
-      debug.log(`[v0] Connecting to Mirage ${selectedModel === "mirage_v2" ? "v2" : ""}...`);
+      // Connect to realtime service
+      debug.log(`[v0] Connecting to ${model}...`);
       debug.log("[v0] Stream info before connect:", {
         videoTracks: stream.getVideoTracks().length,
         audioTracks: stream.getAudioTracks().length,
-        model: selectedModel,
-        modelConfig: model,
+        model: model,
+        modelConfig: modelConfig,
       });
 
       try {
@@ -162,7 +162,7 @@ export function VideoRestylingSDK({
         }, 1000);
 
         realtimeClientRef.current = await clientRef.current.realtime.connect(stream, {
-          model,
+          model: modelConfig,
           onRemoteStream: (transformedStream: MediaStream) => {
             debug.log("[v0] 🎥 RECEIVED TRANSFORMED STREAM!");
             debug.log("[v0] Transformed stream tracks:", {
@@ -453,7 +453,7 @@ export function VideoRestylingSDK({
                 className={`absolute ${isFullscreen ? "top-24 left-4" : "top-2 right-2"} px-2 py-1 bg-green-500 text-white text-xs font-semibold rounded flex items-center gap-1`}
               >
                 <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
-                LIVE ({selectedModel === "mirage_v2" ? "v2" : "v1"})
+                LIVE
               </div>
               {/* Toggle fullscreen button */}
               <button
@@ -485,20 +485,8 @@ export function VideoRestylingSDK({
         <div className="max-w-7xl mx-auto pointer-events-auto">
           <div className="bg-white/10 backdrop-blur-lg rounded-lg p-4 border border-white/20">
             <div className="space-y-3">
-              {/* Model Selector and Prompt Input */}
+              {/* Prompt Input */}
               <div className="flex gap-2">
-                {/* Model Selector */}
-                <select
-                  value={selectedModel}
-                  onChange={(e) => onModelChange(e.target.value as "mirage" | "mirage_v2")}
-                  disabled={isConnected || isConnecting}
-                  className="px-3 py-2 bg-white/10 border border-white/20 text-white rounded-md cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                  title={isConnected ? "Stop the stream to change models" : "Select a model"}
-                >
-                  <option value="mirage" className="bg-gray-900">Mirage v1</option>
-                  <option value="mirage_v2" className="bg-gray-900">Mirage v2</option>
-                </select>
-
                 {/* Prompt Input */}
                 <div className="flex-1">
                   <Input
@@ -564,7 +552,6 @@ export function VideoRestylingSDK({
                   <span className="text-white/80 capitalize">
                     {connectionState}
                   </span>
-                  <span className="text-white/60 text-xs">(Mirage {selectedModel === "mirage_v2" ? "v2" : "v1"})</span>
                   {isConnecting && connectionTime > 0 && (
                     <span className="text-yellow-400 text-xs ml-2">
                       Connecting... {connectionTime}s (may take up to 30s for first frames)
